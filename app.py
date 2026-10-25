@@ -268,7 +268,7 @@ st.markdown(
 
 
 st.markdown(
-    """<div class="prototype-note"><strong>💗 A little transparency:</strong> This website is for education and appointment preparation, not diagnosis. Use fictional data for public demos. Entries stay in the active session; please don’t enter names, addresses, or other identifying details.</div>""",
+    """<div class="prototype-note"><strong>💗 A little transparency:</strong> This website is for education and appointment preparation, not diagnosis. Use fictional data for public demos. Entries are saved to your signed-in account. Avoid entering unnecessary identifying details.</div>""",
     unsafe_allow_html=True,
 )
 
@@ -479,7 +479,16 @@ selected_workspace = st.sidebar.radio(
 )
 page = workspace_labels[selected_workspace]
 st.sidebar.markdown("---")
-st.sidebar.caption("Your entries are not saved to a database in this prototype. Download your report before closing the session if you need to keep it.")
+st.sidebar.caption(f"Signed in as {st.session_state.get('user_email', 'your account')}")
+if st.sidebar.button("Log out"):
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
+    for key in ("supabase_access_token", "supabase_refresh_token", "user_id", "user_email", "data_loaded", "symptom_entries", "lab_entries", "last_saved_lab"):
+        st.session_state.pop(key, None)
+    st.rerun()
+st.sidebar.caption("Your diary and lab entries are saved to your account.")
 
 
 if page == "Home":
@@ -620,8 +629,20 @@ elif page == "Symptom Diary":
                 st.error("Cycle day must be a whole number from 1 to 60, or left blank.")
                 cycle_day = "INVALID"
         if cycle_day != "INVALID":
-            st.session_state.symptom_entries.append(
-                {
+            try:
+                result = supabase.table("symptom_entries").insert({
+                    "user_id": st.session_state.user_id,
+                    "entry_date": entry_date.isoformat(),
+                    "cycle_day": cycle_day,
+                    "pain": int(pain),
+                    "fatigue": int(fatigue),
+                    "mood": mood,
+                    "symptoms": symptoms,
+                    "impact": impact,
+                    "notes": notes.strip(),
+                }).execute()
+                st.session_state.symptom_entries.append({
+                    "_db_id": result.data[0]["id"],
                     "date": entry_date.isoformat(),
                     "cycle_day": cycle_day,
                     "pain": int(pain),
@@ -630,9 +651,10 @@ elif page == "Symptom Diary":
                     "symptoms": symptoms,
                     "impact": impact,
                     "notes": notes.strip(),
-                }
-            )
-            st.success("Check-in saved for this session. You showed up for yourself today. 💗")
+                })
+                st.success("Check-in saved to your account. You showed up for yourself today. 💗")
+            except Exception:
+                st.error("Your check-in couldn't be saved. Please try again.")
 
     if st.session_state.symptom_entries:
         st.markdown("---")
@@ -646,8 +668,12 @@ elif page == "Symptom Diary":
                 if entry["notes"]:
                     st.write("**Notes:**", entry["notes"])
                 if st.button("Delete this entry", key=f"delete_symptom_{idx}"):
-                    st.session_state.symptom_entries.pop(idx)
-                    st.rerun()
+                    try:
+                        supabase.table("symptom_entries").delete().eq("id", entry["_db_id"]).eq("user_id", st.session_state.user_id).execute()
+                        st.session_state.symptom_entries.pop(idx)
+                        st.rerun()
+                    except Exception:
+                        st.error("This entry couldn't be deleted. Please try again.")
 
 
 elif page == "Pattern Insights & Report":
@@ -805,9 +831,17 @@ elif page == "Understand Lab Results":
                 "lab_flag": lab_flag,
                 "notes": lab_notes.strip(),
             }
-            st.session_state.lab_entries.append(lab_entry)
-            st.session_state.last_saved_lab = lab_entry
-            st.success("Result added to this session's visit summary.")
+            try:
+                result = supabase.table("lab_entries").insert({
+                    "user_id": st.session_state.user_id,
+                    "entry_data": lab_entry,
+                }).execute()
+                saved_lab = {**lab_entry, "_db_id": result.data[0]["id"]}
+                st.session_state.lab_entries.append(saved_lab)
+                st.session_state.last_saved_lab = saved_lab
+                st.success("Result saved to your account.")
+            except Exception:
+                st.error("This lab result couldn't be saved. Please try again.")
 
     if st.session_state.last_saved_lab:
         last_lab = st.session_state.last_saved_lab
@@ -834,10 +868,14 @@ elif page == "Understand Lab Results":
                 if lab["notes"]:
                     st.write("**Notes:**", lab["notes"])
                 if st.button("Delete this lab entry", key=f"delete_lab_{i}"):
-                    removed = st.session_state.lab_entries.pop(i)
-                    if st.session_state.last_saved_lab == removed:
-                        st.session_state.last_saved_lab = st.session_state.lab_entries[-1] if st.session_state.lab_entries else None
-                    st.rerun()
+                    try:
+                        supabase.table("lab_entries").delete().eq("id", lab["_db_id"]).eq("user_id", st.session_state.user_id).execute()
+                        removed = st.session_state.lab_entries.pop(i)
+                        if st.session_state.last_saved_lab == removed:
+                            st.session_state.last_saved_lab = st.session_state.lab_entries[0] if st.session_state.lab_entries else None
+                        st.rerun()
+                    except Exception:
+                        st.error("This lab entry couldn't be deleted. Please try again.")
         report = make_printable_report(st.session_state.symptom_entries, st.session_state.lab_entries)
         st.download_button("Download updated printable report (HTML)", data=report, file_name="aarogyasakhi_health_summary.html", mime="text/html")
 
