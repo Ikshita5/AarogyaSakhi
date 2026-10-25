@@ -4,6 +4,7 @@ from datetime import date
 
 import pandas as pd
 import streamlit as st
+from supabase import create_client
 
 
 # ------------------------------------------------------------
@@ -271,7 +272,85 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Data lives in the current Streamlit session only; it is not written to a database.
+# Supabase sign-in is required so each person's entries stay private.
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+except Exception:
+    st.error("Add SUPABASE_URL and SUPABASE_KEY in Streamlit Cloud → App settings → Secrets.")
+    st.stop()
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+if st.session_state.get("supabase_access_token") and st.session_state.get("supabase_refresh_token"):
+    try:
+        supabase.auth.set_session(st.session_state.supabase_access_token, st.session_state.supabase_refresh_token)
+    except Exception:
+        for k in ("supabase_access_token", "supabase_refresh_token", "user_id", "user_email", "data_loaded"):
+            st.session_state.pop(k, None)
+
+if not st.session_state.get("user_id"):
+    st.title("🌷 Welcome to AarogyaSakhi")
+    st.write("Create an account or log in to save your diary and lab entries privately.")
+    tab_login, tab_signup = st.tabs(["Log in", "Create account"])
+    with tab_login:
+        with st.form("login_form"):
+            email = st.text_input("Email address", key="login_email")
+            password = st.text_input("Password", type="password", key="login_password")
+            do_login = st.form_submit_button("Log in", type="primary")
+        if do_login:
+            try:
+                result = supabase.auth.sign_in_with_password({"email": email.strip(), "password": password})
+                if result.user and result.session:
+                    st.session_state.supabase_access_token = result.session.access_token
+                    st.session_state.supabase_refresh_token = result.session.refresh_token
+                    st.session_state.user_id = result.user.id
+                    st.session_state.user_email = result.user.email
+                    st.rerun()
+                else:
+                    st.error("No active session was returned. Check your email confirmation.")
+            except Exception:
+                st.error("Login failed. Check your email and password, and confirm your email if required.")
+    with tab_signup:
+        with st.form("signup_form"):
+            new_email = st.text_input("Email address", key="signup_email")
+            new_password = st.text_input("Create a password (8+ characters)", type="password", key="signup_password")
+            do_signup = st.form_submit_button("Create account", type="primary")
+        if do_signup:
+            if len(new_password) < 8:
+                st.error("Please use a password with at least 8 characters.")
+            else:
+                try:
+                    result = supabase.auth.sign_up({"email": new_email.strip(), "password": new_password})
+                    if result.user and result.session:
+                        st.session_state.supabase_access_token = result.session.access_token
+                        st.session_state.supabase_refresh_token = result.session.refresh_token
+                        st.session_state.user_id = result.user.id
+                        st.session_state.user_email = result.user.email
+                        st.rerun()
+                    else:
+                        st.success("Account created. Check your email to confirm it, then log in.")
+                except Exception:
+                    st.error("Account creation failed. Check the email address and try again.")
+    st.caption("Use a unique password and avoid entering unnecessary identifying details.")
+    st.stop()
+
+if not st.session_state.get("data_loaded"):
+    try:
+        symptoms_db = supabase.table("symptom_entries").select("*").eq("user_id", st.session_state.user_id).order("entry_date", desc=True).execute()
+        labs_db = supabase.table("lab_entries").select("*").eq("user_id", st.session_state.user_id).order("created_at", desc=True).execute()
+        st.session_state.symptom_entries = [{
+            "_db_id": row["id"], "date": row["entry_date"], "cycle_day": row.get("cycle_day"),
+            "pain": row.get("pain", 0), "fatigue": row.get("fatigue", 0), "mood": row.get("mood", "Choose not to say"),
+            "symptoms": row.get("symptoms") or [], "impact": row.get("impact", "No noticeable effect"), "notes": row.get("notes") or ""
+        } for row in symptoms_db.data]
+        st.session_state.lab_entries = [{**(row.get("entry_data") or {}), "_db_id": row["id"]} for row in labs_db.data]
+        st.session_state.last_saved_lab = st.session_state.lab_entries[0] if st.session_state.lab_entries else None
+        st.session_state.data_loaded = True
+    except Exception:
+        st.error("Saved entries could not be loaded. Check the Supabase tables, RLS policies, and secrets.")
+        st.stop()
+
+# Entries are loaded from Supabase after authentication.
 if "symptom_entries" not in st.session_state:
     st.session_state.symptom_entries = []
 if "lab_entries" not in st.session_state:
